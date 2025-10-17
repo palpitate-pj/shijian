@@ -2,7 +2,23 @@
 #include <fstream>
 #include <vector>
 #include <map>
+#include <memory>
 using namespace std;
+
+// 观察者接口
+class IObserver {
+public:
+    virtual ~IObserver() = default;
+    virtual void update(const string& obstacleStatus) = 0;
+};
+
+// 主题接口
+class ISubject {
+public:
+    virtual ~ISubject() = default;
+    virtual void subscribe(shared_ptr<IObserver> observer) = 0;
+    virtual void notify(const string& obstacleStatus) = 0;
+};
 
 // 轮胎类
 class Tire {
@@ -66,21 +82,50 @@ public:
     }
 };
 
-// 多线激光雷达类
-class Lidar {
+// 多线激光雷达类 - 主题
+class Lidar : public ISubject {
 private:
     string model, channels, range, power;
+    vector<shared_ptr<IObserver>> observers;
+    
 public:
     Lidar(string m = "RS-Helios-16p", string ch = "16", string r = "100m", string p = "8W")
         : model(m), channels(ch), range(r), power(p) {}
+    
     void setModel(string m) { model = m; }
     void setChannels(string ch) { channels = ch; }
     void setRange(string r) { range = r; }
     void setPower(string p) { power = p; }
+    
+    void subscribe(shared_ptr<IObserver> observer) override {
+        observers.push_back(observer);
+        cout << "雷达 " << model << " 新增订阅者" << endl;
+    }
+    
+    void notify(const string& obstacleStatus) override {
+        cout << "雷达检测到障碍物: " << obstacleStatus << endl;
+        for (auto& observer : observers) {
+            observer->update(obstacleStatus);
+        }
+    }
+    
+    // 模拟雷达检测到障碍物
+    void detectObstacle(int obstacleType) {
+        string status;
+        switch(obstacleType) {
+            case 1: status = "前方"; break;
+            case 2: status = "左前方"; break;
+            case 3: status = "右前方"; break;
+            default: status = "未知方向"; break;
+        }
+        notify(status);
+    }
+    
     void print() const {
         cout << "  型号: " << model << "\n  通道数: " << channels 
              << "\n  测试范围: " << range << "\n  功耗: " << power << endl;
     }
+    
     void save(ofstream &file) const {
         file << "  型号: " << model << "\n  通道数: " << channels 
              << "\n  测试范围: " << range << "\n  功耗: " << power << endl;
@@ -131,15 +176,18 @@ public:
     }
 };
 
-// 底盘类
-class Chassis {
+// 底盘类 - 观察者
+class Chassis : public IObserver, public enable_shared_from_this<Chassis> {
 private:
     string id, model, wheelbase, track, groundClearance, turningRadius, driveType, maxRange;
     Tire tires[4];
+    shared_ptr<Lidar> subscribedLidar;
+
 public:
     Chassis(string i = "", string m = "SCOUT MINI", string wb = "451mm", string t = "490mm",
             string gc = "115mm", string tr = "0m", string dt = "四轮四驱", string mr = "10KM")
         : id(i), model(m), wheelbase(wb), track(t), groundClearance(gc), turningRadius(tr), driveType(dt), maxRange(mr) {}
+    
     void setId(string i) { id = i; }
     void setModel(string m) { model = m; }
     void setWheelbase(string wb) { wheelbase = wb; }
@@ -149,6 +197,28 @@ public:
     void setDriveType(string dt) { driveType = dt; }
     void setMaxRange(string mr) { maxRange = mr; }
     void setTire(int index, const Tire &tire) { if (index >= 0 && index < 4) tires[index] = tire; }
+    
+    void update(const string& obstacleStatus) override {
+        cout << "底盘 " << id << " 收到障碍物通知: " << obstacleStatus << " -> ";
+        
+        if (obstacleStatus == "前方") {
+            cout << "执行: 后退" << endl;
+        } else if (obstacleStatus == "左前方") {
+            cout << "执行: 右转" << endl;
+        } else if (obstacleStatus == "右前方") {
+            cout << "执行: 左转" << endl;
+        } else {
+            cout << "执行: 停止" << endl;
+        }
+    }
+    
+    // 订阅雷达
+    void subscribeToLidar(shared_ptr<Lidar> lidar) {
+        subscribedLidar = lidar;
+        lidar->subscribe(shared_from_this());
+        cout << "底盘 " << id << " 订阅雷达成功" << endl;
+    }
+    
     void print() const {
         cout << "  编号: " << id << "\n  型号: " << model << "\n  轴距: " << wheelbase
              << "\n  轮距: " << track << "\n  最小离地间隙: " << groundClearance
@@ -156,6 +226,7 @@ public:
              << "\n  最大行程: " << maxRange << "\n  轮胎信息:" << endl;
         tires[0].print();
     }
+    
     void save(ofstream &file) const {
         file << "  编号: " << id << "\n  型号: " << model << "\n  轴距: " << wheelbase
              << "\n  轮距: " << track << "\n  最小离地间隙: " << groundClearance
@@ -189,38 +260,62 @@ public:
 class SmartCar {
 private:
     string id;
-    Chassis chassis;
+    shared_ptr<Chassis> chassis;
     AGXKit agxKit;
     StereoCamera camera;
-    Lidar lidar;
+    shared_ptr<Lidar> lidar;
     Gyroscope gyro;
     Display display;
     Battery battery;
+    
 public:
-    SmartCar(string carId = "") : id(carId) {}
+    SmartCar(string carId = "") : id(carId) {
+        chassis = make_shared<Chassis>();
+        lidar = make_shared<Lidar>();
+    }
+    
     void setId(string carId) { id = carId; }
-    void setChassis(const Chassis &ch) { chassis = ch; }
+    void setChassis(shared_ptr<Chassis> ch) { chassis = ch; }
     void setAgxKit(const AGXKit &kit) { agxKit = kit; }
     void setCamera(const StereoCamera &cam) { camera = cam; }
-    void setLidar(const Lidar &lid) { lidar = lid; }
+    void setLidar(shared_ptr<Lidar> lid) { lidar = lid; }
     void setGyro(const Gyroscope &g) { gyro = g; }
     void setDisplay(const Display &disp) { display = disp; }
     void setBattery(const Battery &bat) { battery = bat; }
+    
     string getId() const { return id; }
+    shared_ptr<Chassis> getChassis() const { return chassis; }
+    shared_ptr<Lidar> getLidar() const { return lidar; }
+    
+    // 设置底盘和雷达的订阅关系
+    void setupSubscription() {
+        if (chassis && lidar) {
+            chassis->subscribeToLidar(lidar);
+        }
+    }
+    
+    // 模拟雷达检测障碍物
+    void simulateObstacleDetection(int obstacleType) {
+        if (lidar) {
+            lidar->detectObstacle(obstacleType);
+        }
+    }
+    
     void print() const {
-        cout << "小车编号: " << id << "\n底盘信息:" << endl; chassis.print();
+        cout << "小车编号: " << id << "\n底盘信息:" << endl; chassis->print();
         cout << "AGX套件:" << endl; agxKit.print();
         cout << "双目摄像头:" << endl; camera.print();
-        cout << "多线激光雷达:" << endl; lidar.print();
+        cout << "多线激光雷达:" << endl; lidar->print();
         cout << "9轴陀螺仪:" << endl; gyro.print();
         cout << "液晶显示屏:" << endl; display.print();
         cout << "电池模块:" << endl; battery.print();
     }
+    
     void save(ofstream &file) const {
-        file << "小车编号: " << id << "\n底盘信息:" << endl; chassis.save(file);
+        file << "小车编号: " << id << "\n底盘信息:" << endl; chassis->save(file);
         file << "AGX套件:" << endl; agxKit.save(file);
         file << "双目摄像头:" << endl; camera.save(file);
-        file << "多线激光雷达:" << endl; lidar.save(file);
+        file << "多线激光雷达:" << endl; lidar->save(file);
         file << "9轴陀螺仪:" << endl; gyro.save(file);
         file << "液晶显示屏:" << endl; display.save(file);
         file << "电池模块:" << endl; battery.save(file);
@@ -229,19 +324,26 @@ public:
 };
 
 // 函数声明
-void inputCarInfo(SmartCar& car, int carNumber);
+void inputCarInfo(shared_ptr<SmartCar> car, int carNumber);
 void inputStudentInfo(Student& student, int studentNumber);
-void assignCarsToStudents(vector<SmartCar>& cars, vector<Student>& students);
-void saveDataToFiles(const vector<SmartCar>& cars, const vector<Student>& students);
-bool loadDataFromFiles(vector<SmartCar>& cars, vector<Student>& students, map<string, Student>& carToStudentMap);
-void displayCarInfo(const SmartCar& car, const Student* student, int index, int total);
-void browseCars(const vector<SmartCar>& cars, const map<string, Student>& carToStudentMap);
+void assignCarsToStudents(vector<shared_ptr<SmartCar>>& cars, vector<Student>& students);
+void saveDataToFiles(const vector<shared_ptr<SmartCar>>& cars, const vector<Student>& students);
+bool loadDataFromFiles(vector<shared_ptr<SmartCar>>& cars, vector<Student>& students, map<string, Student>& carToStudentMap);
+void displayCarInfo(const shared_ptr<SmartCar>& car, const Student* student, int index, int total);
+void browseCars(const vector<shared_ptr<SmartCar>>& cars, const map<string, Student>& carToStudentMap);
+void obstacleDetectionDemo(vector<shared_ptr<SmartCar>>& cars);
 
 int main() {
-    vector<SmartCar> cars(10);
+    vector<shared_ptr<SmartCar>> cars;
     vector<Student> students(10);
     
     cout << "=== 智能小车信息录入与分配系统 ===\n" << endl;
+    
+    // 创建10台小车
+    for (int i = 0; i < 10; i++) {
+        auto car = make_shared<SmartCar>();
+        cars.push_back(car);
+    }
     
     // 录入信息
     cout << "开始录入10台智能小车信息:" << endl;
@@ -262,9 +364,18 @@ int main() {
     
     cout << "\n=== 信息录入和分配完成！数据已保存到文件 ===\n" << endl;
     
+    // 设置订阅关系
+    cout << "设置雷达和底盘的订阅关系..." << endl;
+    for (auto& car : cars) {
+        car->setupSubscription();
+    }
+    
+    // 障碍物检测演示
+    obstacleDetectionDemo(cars);
+    
     // 从文件加载并浏览
-    cout << "从文件加载数据并开始浏览..." << endl;
-    vector<SmartCar> loadedCars;
+    cout << "\n从文件加载数据并开始浏览..." << endl;
+    vector<shared_ptr<SmartCar>> loadedCars;
     vector<Student> loadedStudents;
     map<string, Student> carToStudentMap;
     
@@ -277,17 +388,17 @@ int main() {
     return 0;
 }
 
-void inputCarInfo(SmartCar& car, int carNumber) {
+void inputCarInfo(shared_ptr<SmartCar> car, int carNumber) {
     string carId, chassisId;
     cout << "请输入小车编号(cqusn开头的16位数字+字母): ";
     cin >> carId;
-    car.setId(carId);
+    car->setId(carId);
     
     cout << "请输入底盘编号(dp开头的8位数字+字母): ";
     cin >> chassisId;
     
-    Chassis chassis;
-    chassis.setId(chassisId);
+    auto chassis = car->getChassis();
+    chassis->setId(chassisId);
     
     // 设置轮胎
     Tire tire;
@@ -295,9 +406,8 @@ void inputCarInfo(SmartCar& car, int carNumber) {
     cout << "请选择轮胎型号 (1-公路轮, 2-麦克纳姆轮): ";
     cin >> tireChoice;
     tire.setModel(tireChoice == 1 ? "公路轮" : "麦克纳姆轮");
-    for (int i = 0; i < 4; i++) chassis.setTire(i, tire);
+    for (int i = 0; i < 4; i++) chassis->setTire(i, tire);
     
-    car.setChassis(chassis);
     cout << "第" << carNumber << "台小车信息录入完成！" << endl;
 }
 
@@ -312,22 +422,22 @@ void inputStudentInfo(Student& student, int studentNumber) {
     cout << "第" << studentNumber << "名学生信息录入完成！" << endl;
 }
 
-void assignCarsToStudents(vector<SmartCar>& cars, vector<Student>& students) {
+void assignCarsToStudents(vector<shared_ptr<SmartCar>>& cars, vector<Student>& students) {
     cout << "\n开始分配小车给学生..." << endl;
     for (size_t i = 0; i < students.size() && i < cars.size(); i++) {
-        students[i].setCarId(cars[i].getId());
+        students[i].setCarId(cars[i]->getId());
         cout << "学生 " << students[i].getName() << "(" << students[i].getStudentId() 
-             << ") 分配到小车: " << cars[i].getId() << endl;
+             << ") 分配到小车: " << cars[i]->getId() << endl;
     }
 }
 
-void saveDataToFiles(const vector<SmartCar>& cars, const vector<Student>& students) {
+void saveDataToFiles(const vector<shared_ptr<SmartCar>>& cars, const vector<Student>& students) {
     ofstream carFile("smart_cars_details.txt");
     if (carFile.is_open()) {
         carFile << "=== 智能小车详细信息 ===" << endl;
         for (size_t i = 0; i < cars.size(); i++) {
             carFile << "\n【第" << (i + 1) << "台小车】" << endl;
-            cars[i].save(carFile);
+            cars[i]->save(carFile);
         }
         carFile.close();
     }
@@ -342,7 +452,7 @@ void saveDataToFiles(const vector<SmartCar>& cars, const vector<Student>& studen
     cout << "数据已保存到: smart_cars_details.txt 和 car_assignment.txt" << endl;
 }
 
-bool loadDataFromFiles(vector<SmartCar>& cars, vector<Student>& students, map<string, Student>& carToStudentMap) {
+bool loadDataFromFiles(vector<shared_ptr<SmartCar>>& cars, vector<Student>& students, map<string, Student>& carToStudentMap) {
     // 加载分配信息
     ifstream assignFile("car_assignment.txt");
     if (!assignFile.is_open()) return false;
@@ -367,7 +477,9 @@ bool loadDataFromFiles(vector<SmartCar>& cars, vector<Student>& students, map<st
     
     while (getline(carFile, line)) {
         if (line.find("小车编号: ") != string::npos) {
-            cars.push_back(SmartCar(line.substr(line.find(": ") + 2)));
+            auto car = make_shared<SmartCar>();
+            car->setId(line.substr(line.find(": ") + 2));
+            cars.push_back(car);
         }
     }
     carFile.close();
@@ -376,7 +488,7 @@ bool loadDataFromFiles(vector<SmartCar>& cars, vector<Student>& students, map<st
     return true;
 }
 
-void displayCarInfo(const SmartCar& car, const Student* student, int index, int total) {
+void displayCarInfo(const shared_ptr<SmartCar>& car, const Student* student, int index, int total) {
     cout << "\n==========================================" << endl;
     cout << "=== 智能小车信息浏览 ===" << endl;
     cout << "当前显示: 第 " << index + 1 << " / " << total << " 台" << endl;
@@ -387,7 +499,7 @@ void displayCarInfo(const SmartCar& car, const Student* student, int index, int 
     else cout << "未分配学生" << endl;
     
     cout << "\n【小车基本信息】" << endl;
-    car.print();
+    car->print();
     
     cout << "\n==========================================" << endl;
     cout << "操作提示: n-下一辆, p-上一辆, q-退出" << endl;
@@ -396,7 +508,7 @@ void displayCarInfo(const SmartCar& car, const Student* student, int index, int 
     cout << "请输入操作指令: ";
 }
 
-void browseCars(const vector<SmartCar>& cars, const map<string, Student>& carToStudentMap) {
+void browseCars(const vector<shared_ptr<SmartCar>>& cars, const map<string, Student>& carToStudentMap) {
     int currentIndex = 0, total = cars.size();
     if (total == 0) {
         cout << "没有小车信息可浏览！" << endl;
@@ -405,7 +517,7 @@ void browseCars(const vector<SmartCar>& cars, const map<string, Student>& carToS
     
     while (true) {
         const Student* student = nullptr;
-        auto it = carToStudentMap.find(cars[currentIndex].getId());
+        auto it = carToStudentMap.find(cars[currentIndex]->getId());
         if (it != carToStudentMap.end()) student = &(it->second);
         
         displayCarInfo(cars[currentIndex], student, currentIndex, total);
@@ -420,4 +532,27 @@ void browseCars(const vector<SmartCar>& cars, const map<string, Student>& carToS
     }
     
     cout << "\n浏览结束，感谢使用！" << endl;
+}
+
+void obstacleDetectionDemo(vector<shared_ptr<SmartCar>>& cars) {
+    cout << "\n=== 障碍物检测演示 ===" << endl;
+    cout << "输入说明: 1-前方, 2-左前方, 3-右前方, 0-返回" << endl;
+    
+    int input;
+    while (true) {
+        cout << "\n请输入障碍物类型: ";
+        cin >> input;
+        
+        if (input == 0) break;
+        if (input < 1 || input > 3) {
+            cout << "无效输入，请重新输入!" << endl;
+            continue;
+        }
+        
+        // 所有小车同时检测障碍物
+        for (size_t i = 0; i < cars.size(); i++) {
+            cout << "\n--- 小车 " << cars[i]->getId() << " ---" << endl;
+            cars[i]->simulateObstacleDetection(input);
+        }
+    }
 }
